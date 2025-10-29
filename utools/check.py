@@ -2,8 +2,8 @@ import torch
 import numpy as np
 import time
 import os
-import tools.render.plot_3d_global as plot_3d
-import moviepy.editor as mp
+import render.plot_3d_global as plot_3d
+import moviepy as mp
 import matplotlib.pyplot as plt
 ## 绘制骨骼动画 
 def render_motion(data,output_dir, method='fast'):
@@ -75,8 +75,10 @@ def divide_3d_point(data, output_dir, fnum, name):
 
 if __name__=="__main__":
     # npy_file = r'C:\Users\Y9000P\Desktop\WorkingSpace\motionProcessTools\MotionProcessTools\data\npy_file\TCS01C01B24_joints.npy'
-    npy_file = ''
+    npy_file = r'C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\smplify3d\results_smplfitting\SMPLFit_000000\SMPLPose_000000.pkl'
+    out_dir = r'C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\view\smplify3d'
     npy_file = np.load(npy_file)
     print(npy_file.shape)
     # plot_3d_point(npy_file, './', 100)
     # divide_3d_point(npy_file, './', 100, 'TCS01C01B24_F100_joints.npy')
+    render_motion(npy_file, out_dir, method='fast')

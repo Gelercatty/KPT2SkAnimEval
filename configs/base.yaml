@@ -1,0 +1,25 @@
+test:
+  test
+# gpu:0   [0, 1, 2...] acclerate
+device: 0
+
+evalon: 
+
+dataset:
+  humanml3d:
+    gt:                  # ground truth   
+    hyberik:             # hyberik processed res
+    smplify3d:           # smplify3d processed res
+
+    
+  taichi:
+    gt:
+    hyberik:
+    smplify3d:
+
+metrics:
+  mpjep:
+  pampjep:
+  pck:
+  ble:
+  

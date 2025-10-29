@@ -1,0 +1,15 @@
+python -m methods.Smplify3D.fit --dir C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\humanML3D --save_folder C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\smplify3d_bates --cuda 0
+
+
+
+
+
+python utools/pose2kpt.py --dir C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\hyberik_bates  --out C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\hyberik_reKpt --cuda 0 --model-dir C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\deps\smpl_models
+
+
+python utools/smpl_param2kpt.py --dir C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\hyberik_bates  --out C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\hyberik_reKpt --model-dir C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\deps\smpl_models --cuda 0 --joints 24 --humanml22
+
+
+
+
+python utools/smpl_param2kpt.py --dir C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\hyberik_bates  --out C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\hyberik_reKpt --model-dir C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\deps\smpl_models --cuda 0 --joints 24 --humanml22
