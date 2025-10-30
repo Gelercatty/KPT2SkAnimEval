@@ -1,3 +1,13 @@
+# Setup
+
+`python=3.11`
+
+`uv sync`
+
+1. 准备好smpl模型
+2. 将humanml3d 和 taichi 数据集准备好，在`configs/base.yaml` 中配置好数据集和smpl模型路径
+
+
 # Smplify3D
 
 # 使用smplify3d 拟合kpt数据形成smpl参数 h3d 数据集
