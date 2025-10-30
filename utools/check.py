@@ -75,10 +75,24 @@ def divide_3d_point(data, output_dir, fnum, name):
 
 if __name__=="__main__":
     # npy_file = r'C:\Users\Y9000P\Desktop\WorkingSpace\motionProcessTools\MotionProcessTools\data\npy_file\TCS01C01B24_joints.npy'
-    npy_file = r'C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\smplify3d\results_smplfitting\SMPLFit_000000\SMPLPose_000000.pkl'
-    out_dir = r'C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\view\smplify3d'
-    npy_file = np.load(npy_file)
-    print(npy_file.shape)
-    # plot_3d_point(npy_file, './', 100)
-    # divide_3d_point(npy_file, './', 100, 'TCS01C01B24_F100_joints.npy')
-    render_motion(npy_file, out_dir, method='fast')
+    # h3d_raw_npy_file = r'C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\humanML3D\000000.npy'
+    # h3d_hyb_npy_file = r'C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\hyberik_humanml3d_reKpt\SMPLPoss_000000_kpt3d.npy'
+    # h3d_smplify3d_npy_file = r'C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\out\smplify3d_humanml3d_reKpt\SMPLPose_000000_kpt3d.npy'
+
+    # out_dir_h3d_raw = r"C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\view\raw"
+    # out_dir_h3d_hyb = r"C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\view\hybri"
+    # out_dir_h3d_smpl = r"C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\view\smpl3d"
+
+    # data_npy_h3d_raw = np.load(h3d_raw_npy_file)
+    # data_npy_h3d_hyb = np.load(h3d_hyb_npy_file)
+    # data_npy_h3d_smpl = np.load(h3d_smplify3d_npy_file)
+    # render_motion(data_npy_h3d_raw, out_dir_h3d_raw, method='fast')
+    # render_motion(data_npy_h3d_hyb, out_dir_h3d_hyb, method='fast')
+    # render_motion(data_npy_h3d_smpl, out_dir_h3d_smpl, method='fast')
+
+    taichi_raw_npy_file = r"C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\dataset\taichi\S01C01B01.npy"
+
+    taichi_data_raw = np.load(taichi_raw_npy_file)
+    out_path = r"C:\Users\PC\Desktop\workingSpace\KPT2SkAnimEval\view"
+
+    render_motion(taichi_data_raw, out_path, method='fast')

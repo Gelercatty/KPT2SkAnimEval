@@ -630,3 +630,380 @@ class BLE(Metric):
     @torch.no_grad()
     def reset(self) -> None:
         super().reset()
+
+
+class PAPCK(Metric):
+    """
+    PCK (Percentage of Correct Keypoints) with Procrustes Alignment (PA)
+
+    流程
+    ----
+    1) 对齐：对每个样本，用(相似)Procrustes将 preds 对齐到 target（可选是否估计尺度）。
+       - 对齐仅使用 mask=True 的关节（若给定），无效点不参与对齐。
+       - 若有效点数少于 2，则跳过对齐（等价于恒等变换）。
+    2) 计算距离：对齐后的 preds 与 target 的每关节欧氏距离 d，并按 unit_scale 缩放。
+    3) 归一化：若给定 norm_scale，以其归一化；否则若给定 ref_pair，以该对关节在 target 中的距离做每样本尺度；
+       否则使用绝对阈值。
+    4) PCK：d' <= threshold 计为命中，仅统计 mask=True 且有限值的关节。
+
+    参数
+    ----
+    threshold: float
+        阈值（绝对或归一化后）
+    unit_scale: float
+        距离单位缩放（在比较阈值前施加）
+    strict_shape: bool
+        是否强检 preds/target 形状一致、且为 [..., J, C], C∈{2,3}
+    ref_pair: Optional[(i, j)]
+        每样本归一化参考关节对（当未给 norm_scale 时生效）
+    align_with_scale: bool
+        PA 对齐是否估计尺度（True=相似变换；False=刚体变换）
+    dist_sync_on_step: bool
+        torchmetrics 选项
+    """
+
+    full_state_update: bool = False
+    higher_is_better:  bool = True
+    is_differentiable: bool = False
+
+    def __init__(
+        self,
+        threshold: float = 0.05,
+        unit_scale: float = 1.0,
+        strict_shape: bool = True,
+        ref_pair: Optional[Tuple[int, int]] = None,
+        align_with_scale: bool = True,
+        dist_sync_on_step: bool = False,
+        **kwargs,
+    ):
+        super().__init__(dist_sync_on_step=dist_sync_on_step, **kwargs)
+        self.threshold = float(threshold)
+        self.unit_scale = float(unit_scale)
+        self.strict_shape = bool(strict_shape)
+        self.ref_pair = ref_pair
+        self.align_with_scale = bool(align_with_scale)
+
+        self.add_state("correct_count",
+                       default=torch.tensor(0, dtype=torch.long),
+                       dist_reduce_fx="sum")
+        self.add_state("total_count",
+                       default=torch.tensor(0, dtype=torch.long),
+                       dist_reduce_fx="sum")
+
+    # ---------- 工具函数 ----------
+
+    @staticmethod
+    def _ensure_shape(preds: Tensor, target: Tensor):
+        if preds.shape != target.shape:
+            raise ValueError(f"preds/target 形状不一致: {preds.shape} vs {target.shape}")
+        if preds.ndim < 3:
+            raise ValueError(f"期望输入为 [..., J, C]，但得到 {preds.shape}")
+        C = preds.shape[-1]
+        if C not in (2, 3):
+            raise ValueError(f"最后一维 C 只能为 2 或 3，但得到 C={C}")
+
+    @torch.no_grad()
+    def _compute_ref_scale(self, target: Tensor) -> Optional[Tensor]:
+        """
+        若设置了 ref_pair=(i,j)，返回形状 (B,1) 的每样本尺度；否则返回 None。
+        target: (B, J, C)
+        """
+        if self.ref_pair is None:
+            return None
+        i, j = self.ref_pair
+        J = target.shape[-2]
+        if not (0 <= i < J and 0 <= j < J):
+            raise ValueError(f"ref_pair 索引越界: (i={i}, j={j})，J={J}")
+        vi = target[:, i, :]          # (B, C)
+        vj = target[:, j, :]
+        scale = torch.linalg.vector_norm(vi - vj, dim=-1).clamp_min(1e-12)  # (B,)
+        return scale.view(-1, 1)      # (B,1)
+
+    @torch.no_grad()
+    def _pa_align_single(
+        self, X: Tensor, Y: Tensor, valid: Optional[Tensor], with_scale: bool
+    ) -> Tensor:
+        """
+        对单个样本做 Procrustes 对齐，将 X (J,C) 对齐到 Y (J,C)，返回对齐后的 X'。
+        valid: (J,) 的 bool，指示用于估计对齐的关节；若 None 则全部使用。
+        """
+        J, C = X.shape
+        if valid is None:
+            valid = torch.ones(J, dtype=torch.bool, device=X.device)
+        idx = valid.nonzero(as_tuple=False).flatten()
+        # 有效点不足，跳过对齐
+        if idx.numel() < 2:
+            return X
+
+        x = X[idx]  # (K, C)
+        y = Y[idx]  # (K, C)
+
+        # 去均值
+        mu_x = x.mean(dim=0, keepdim=True)  # (1, C)
+        mu_y = y.mean(dim=0, keepdim=True)
+        x_c = x - mu_x
+        y_c = y - mu_y
+
+        # 协方差与 SVD
+        # 注意：torch.linalg.svd 在低秩时也可用
+        # M = x_c^T y_c
+        M = x_c.transpose(0, 1) @ y_c  # (C, C)
+        U, S, Vh = torch.linalg.svd(M, full_matrices=False)  # M ≈ U @ diag(S) @ Vh
+        V = Vh.transpose(0, 1)
+        R = V @ U.transpose(0, 1)  # 初始旋转
+
+        # 处理反射（保证 det(R) > 0）
+        if torch.linalg.det(R) < 0:
+            V_corr = V.clone()
+            V_corr[:, -1] *= -1
+            R = V_corr @ U.transpose(0, 1)
+            # S 的最后一项也视作取反，但尺度计算里用的是 S.sum()，下面会自然体现
+
+        # 尺度
+        if with_scale:
+            x_var = (x_c**2).sum()  # Frobenius 范数平方
+            # 防止除零
+            if x_var.item() < 1e-12:
+                s = 1.0
+            else:
+                s = (S.sum() / x_var).item()
+        else:
+            s = 1.0
+
+        # 平移
+        t = (mu_y.squeeze(0) - s * (R @ mu_x.squeeze(0)))  # (C,)
+
+        # 应用于所有关节
+        X_aligned = (s * (X @ R)) + t  # 这里使用右乘：X(J,C) @ R(C,C)
+
+        return X_aligned
+
+    @torch.no_grad()
+    def _pa_align_batch(
+        self, preds: Tensor, target: Tensor, mask: Optional[Tensor]
+    ) -> Tensor:
+        """
+        逐样本对齐：preds/target: (B, J, C)；mask: (B, J) 或 None
+        返回对齐后的 preds_aligned: (B, J, C)
+        """
+        B, J, C = preds.shape
+        preds_aligned = torch.empty_like(preds, dtype=preds.dtype)
+        for b in range(B):
+            valid_b = mask[b] if mask is not None else None
+            preds_aligned[b] = self._pa_align_single(
+                preds[b], target[b], valid_b, self.align_with_scale
+            )
+        return preds_aligned
+
+    # ---------- Metric 接口 ----------
+
+    @torch.no_grad()
+    def update(
+        self,
+        preds: Tensor,
+        target: Tensor,
+        mask: Optional[Tensor] = None,
+        norm_scale: Optional[Tensor] = None,
+    ) -> None:
+        """
+        参数
+        ----
+        preds, target: [..., J, C] (C=2或3)
+        mask:         [..., J] 的 bool（True=有效），可广播
+        norm_scale:   每样本或每关节归一化尺度；形状可为 [...], [...,1], 或 [...,J]，
+                      将广播到 (B, J)。若给定，优先于 ref_pair。
+        """
+        preds  = torch.as_tensor(preds)
+        target = torch.as_tensor(target)
+
+        if self.strict_shape:
+            self._ensure_shape(preds, target)
+
+        # 展平批维
+        *batch_dims, J, C = preds.shape
+        B = int(torch.tensor(batch_dims).prod().item()) if batch_dims else 1
+        preds  = preds.reshape(B, J, C)
+        target = target.reshape(B, J, C)
+
+        # mask -> (B, J)（用于对齐与评估）
+        if mask is not None:
+            mask = torch.as_tensor(mask).bool()
+            try:
+                mask = mask.expand(*batch_dims, J).reshape(B, J)
+            except RuntimeError:
+                raise ValueError(f"mask 形状 {tuple(mask.shape)} 不能广播到 {tuple((*batch_dims, J))}")
+
+        device = self.correct_count.device
+        preds  = preds.to(device)
+        target = target.to(device)
+        if mask is not None:
+            mask = mask.to(device)
+
+        # --------- 先做 PA 对齐（逐样本，基于 mask=True 的关节） ---------
+        preds_aligned = self._pa_align_batch(preds, target, mask)
+
+        # --------- 距离（单位缩放） ---------
+        dist = torch.linalg.vector_norm(preds_aligned - target, dim=-1).to(torch.float64)  # (B, J)
+        if self.unit_scale != 1.0:
+            dist = dist * self.unit_scale
+
+        # --------- 归一化尺度 ---------
+        if norm_scale is not None:
+            s = torch.as_tensor(norm_scale, device=device, dtype=torch.float64)
+            # 广播到 (B, J)
+            try:
+                s = s.expand(*batch_dims, J).reshape(B, J)
+            except RuntimeError:
+                # 允许只给每样本尺度（形状 (B,) 或 (*batch,1)）
+                try:
+                    s = s.expand(*batch_dims, 1).reshape(B, 1).expand(B, J)
+                except RuntimeError:
+                    raise ValueError(f"norm_scale 形状 {tuple(s.shape)} 不能广播到 {tuple((*batch_dims, J))}")
+            s = s.clamp_min(1e-12)
+            dist_norm = dist / s
+        else:
+            s_ref = self._compute_ref_scale(target)  # (B,1) or None
+            if s_ref is not None:
+                dist_norm = dist / s_ref.clamp_min(1e-12)
+            else:
+                dist_norm = dist  # 绝对阈值
+
+        # --------- 有效性与命中 ---------
+        valid = torch.isfinite(dist_norm)
+        if mask is not None:
+            valid = valid & mask
+
+        if valid.any().item():
+            hit = (dist_norm <= self.threshold) & valid
+            self.correct_count += hit.sum().to(torch.long)
+            self.total_count   += valid.sum().to(torch.long)
+
+    @torch.no_grad()
+    def compute(self) -> Tensor:
+        if self.total_count.item() == 0:
+            return torch.tensor(float('nan'), dtype=torch.float32, device=self.correct_count.device)
+        pck = (self.correct_count.to(torch.float64) / self.total_count).to(torch.float32)
+        return pck
+
+    @torch.no_grad()
+    def reset(self) -> None:
+        super().reset()
+
+
+
+class BDE(Metric):
+    """
+    Bone Direction Error (角度, 单位: 度)
+    - 输入: [..., J, 3]
+    - 每条骨段向量 v = p[i]-p[j]，与 GT 的夹角 acos( clamp( dot/(||v||*||vt||) ) )
+    - 仅统计两端关节均有效的骨段；零长度骨段将被跳过（不计入统计）
+    """
+    full_state_update: bool = False
+    higher_is_better:  bool = False
+    is_differentiable: bool = False
+
+    def __init__(
+        self,
+        bones: Optional[Sequence[Tuple[int, int]]] = None,
+        parents: Optional[Sequence[int]] = None,
+        strict_shape: bool = True,
+        eps: float = 1e-8,
+        dist_sync_on_step: bool = False,
+        **kwargs,
+    ):
+        super().__init__(dist_sync_on_step=dist_sync_on_step, **kwargs)
+        if bones is None and parents is None:
+            raise ValueError("必须提供 bones 或 parents 之一")
+        if bones is not None and parents is not None:
+            raise ValueError("bones 与 parents 只能提供其一")
+        self.bones = None if bones is None else [(int(i), int(j)) for i, j in bones]
+        self.parents = None if parents is None else [int(p) for p in parents]
+        self.strict_shape = bool(strict_shape)
+        self.eps = float(eps)
+
+        self.add_state("sum_deg",
+                       default=torch.tensor(0.0, dtype=torch.float64),
+                       dist_reduce_fx="sum")
+        self.add_state("total_count",
+                       default=torch.tensor(0, dtype=torch.long),
+                       dist_reduce_fx="sum")
+
+    @staticmethod
+    def _ensure_shape(preds: Tensor, target: Tensor):
+        if preds.shape != target.shape:
+            raise ValueError(f"preds/target 形状不一致: {preds.shape} vs {target.shape}")
+        if preds.ndim < 3 or preds.shape[-1] != 3:
+            raise ValueError(f"期望输入为 [..., J, 3]，但得到 {preds.shape}")
+
+    @staticmethod
+    def _build_bones_from_parents(parents: Sequence[int]) -> Sequence[Tuple[int, int]]:
+        bones = []
+        for i, p in enumerate(parents):
+            if p is None:
+                continue
+            if p >= 0:
+                bones.append((i, p))
+        if not bones:
+            raise ValueError("parents 生成的骨段为空")
+        return bones
+
+    @torch.no_grad()
+    def update(self, preds: Tensor, target: Tensor, mask: Optional[Tensor] = None) -> None:
+        preds = torch.as_tensor(preds)
+        target = torch.as_tensor(target)
+
+        if self.strict_shape:
+            self._ensure_shape(preds, target)
+
+        *batch_dims, J, C = preds.shape
+        B = int(torch.tensor(batch_dims).prod().item()) if batch_dims else 1
+        preds  = preds.reshape(B, J, C)
+        target = target.reshape(B, J, C)
+
+        bones = self.bones if self.bones is not None else self._build_bones_from_parents(self.parents)
+        for (i, j) in bones:
+            if not (0 <= i < J and 0 <= j < J):
+                raise ValueError(f"骨段越界: ({i},{j}), J={J}")
+
+        if mask is not None:
+            mask = torch.as_tensor(mask).bool()
+            try:
+                mask = mask.expand(*batch_dims, J).reshape(B, J)
+            except RuntimeError:
+                raise ValueError(f"mask 形状 {tuple(mask.shape)} 不能广播到 {tuple((*batch_dims, J))}")
+
+        device = self.sum_deg.device
+        preds  = preds.to(device, dtype=torch.float64)
+        target = target.to(device, dtype=torch.float64)
+        if mask is not None:
+            mask = mask.to(device)
+
+        idx_i = torch.tensor([i for i, _ in bones], device=device, dtype=torch.long)
+        idx_j = torch.tensor([j for _, j in bones], device=device, dtype=torch.long)
+
+        pv = preds[:, idx_i, :] - preds[:, idx_j, :]   # (B, E, 3)
+        tv = target[:, idx_i, :] - target[:, idx_j, :]
+
+        lp = torch.linalg.vector_norm(pv, dim=-1)  # (B, E)
+        lt = torch.linalg.vector_norm(tv, dim=-1)
+
+        # 有效性：长度都>eps，且（若给定）两端关节有效
+        valid = (lp > self.eps) & (lt > self.eps) & torch.isfinite(lp) & torch.isfinite(lt)
+        if mask is not None:
+            mi = mask[:, idx_i]
+            mj = mask[:, idx_j]
+            valid = valid & mi & mj
+
+        if valid.any().item():
+            dot = (pv * tv).sum(-1)
+            cos = (dot / (lp * lt).clamp_min(self.eps)).clamp(-1.0, 1.0)
+            ang = torch.rad2deg(torch.arccos(cos))  # (B, E)
+            sel = ang[valid]
+            self.sum_deg    += sel.sum()
+            self.total_count += valid.sum().to(torch.long)
+
+    @torch.no_grad()
+    def compute(self) -> Tensor:
+        if self.total_count.item() == 0:
+            return torch.tensor(float('nan'), dtype=torch.float32, device=self.sum_deg.device)
+        return (self.sum_deg / self.total_count).to(torch.float32)

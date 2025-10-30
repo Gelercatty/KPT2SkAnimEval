@@ -3,23 +3,33 @@ test:
 # gpu:0   [0, 1, 2...] acclerate
 device: 0
 
-evalon: 
-
+output_dir: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/results"
+batch_size: 1
+num_workers: 0
 dataset:
-  humanml3d:
-    gt:                  # ground truth   
-    hyberik:             # hyberik processed res
-    smplify3d:           # smplify3d processed res
-
-    
+      # smplify3d processed res
   taichi:
-    gt:
-    hyberik:
-    smplify3d:
-
+    # gt: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/dataset/taichi"
+    gt: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/dataset/taichi_local"
+    # gtt: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/dataset/taichi"
+    hyberik: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/dataset/out/hyberik_taichi_reKpt"
+    smplify3d: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/dataset/out/smplify3d_taichi_reKpt"
+  humanml3d:
+    # gt: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/dataset/humanML3D"                                   # ground truth
+    gt: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/dataset/humanML3D_local"                                   # ground truth
+    # gtt: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/dataset/humanML3D"
+    hyberik: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/dataset/out/hyberik_humanml3d_reKpt"            # hyberik processed res
+    smplify3d: "C:/Users/PC/Desktop/workingSpace/KPT2SkAnimEval/dataset/out/smplify3d_humanml3d_reKpt"  
 metrics:
   mpjep:
   pampjep:
-  pck:
+  # pck:
+  #   threshold: 1
+  #   unit_scale: 1
+  papck:
+    threshold: 0.05
+    unit_scale: 1
   ble:
+    mode: "rel"
+  bde:
   
